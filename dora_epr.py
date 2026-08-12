@@ -1,27 +1,18 @@
 import os
-import time
 import json
 import pandas as pd
+import streamlit as st
 from google import genai
 from google.genai import types
 
-# --- CONFIGURAÇÃO DE PASTAS ---
-PASTA_ENTRADA = "entrada_dados"
-PASTA_SAIDA = "saida_planilhas"
-PASTA_PROCESSADOS = "historico_processados"
+# --- CONFIGURAÇÃO DA PÁGINA STREAMLIT ---
+st.set_page_config(
+    page_title="Automação ERP/WMS com Clippy",
+    page_icon="📎",
+    layout="wide"
+)
 
-for pasta in [PASTA_ENTRADA, PASTA_SAIDA, PASTA_PROCESSADOS]:
-    os.makedirs(pasta, exist_ok=True)
-
-# --- CHAVE DE API GEMINI ---
-api_key = os.environ.get("GEMINI_API_KEY")
-if not api_key:
-    print("❌ ERRO: Variável de ambiente GEMINI_API_KEY não encontrada!")
-    print("Defina a chave no terminal: export GEMINI_API_KEY='sua_chave'")
-    exit(1)
-
-client = genai.Client(api_key=api_key)
-
+# --- PROMPT DO SISTEMA GEMINI ---
 SYSTEM_PROMPT = """
 Você é um motor de extração de dados para sistemas ERP e WMS (Manthan MWS, SAP, Protheus).
 Sua tarefa é ler mensagens de texto informais (como conversas de WhatsApp, e-mails ou anotações) e extrair os dados em formato de tabela JSON limpa.
@@ -40,21 +31,29 @@ Exemplo de retorno:
 [
   {"SKU": "ML-04", "Item": "Molas de Aço", "Quantidade": 500, "Endereco": "RUA-A-01-2", "Lote": "L2026-A", "Ordem": "99402", "Data": "15/08/2026"}
 ]
-Não inclua nenhuma explicação, apenas o código JSON.
+Não inclua nenhuma explicação ou formatação markdown adicional, apenas o código JSON.
 """
 
-def processar_texto_com_gemini(texto_raw):
-    """Envia o texto cru do WhatsApp para a IA estruturar nas colunas do ERP."""
+# --- INICIALIZAÇÃO DA SESSÃO ---
+if "api_key" not in st.session_state:
+    st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+
+if "mensagens_clippy" not in st.session_state:
+    st.session_state.mensagens_clippy = "Olá! Eu sou o Clippy! 📎\nEstou aqui para ajudar a transformar suas mensagens brutas em dados prontos para ERP/WMS."
+
+# --- FUNÇÃO DE PROCESSAMENTO COM GEMINI ---
+def processar_texto_com_gemini(texto_raw, api_key):
+    client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model='gemini-2.5-flash',
         contents=f"Extraia os dados operacionais deste texto:\n\n{texto_raw}",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
-            temperature=0.1
+            temperature=0.1,
+            response_mime_type="application/json"
         )
     )
     
-    # Limpa possíveis marcações de código markdown do retorno
     raw_response = response.text.strip()
     if raw_response.startswith("```json"):
         raw_response = raw_response[7:-3].strip()
@@ -63,47 +62,138 @@ def processar_texto_com_gemini(texto_raw):
         
     return json.loads(raw_response)
 
-def executar_robo():
-    print("🤖 Robô ERP/MWS Iniciado!")
-    print(f"📂 Vigia ativado na pasta: ./{PASTA_ENTRADA}")
-    print("Aguardando novos arquivos para converter...\n")
+# --- CSS PERSONALIZADO (BALÃO DE FALA E PERSONAGEM CLIPPY) ---
+st.markdown("""
+    <style>
+    .clippy-container {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        max-width: 320px;
+    }
+    .clippy-speech {
+        background-color: #FFFFCC;
+        border: 2px solid #000;
+        border-radius: 10px;
+        padding: 12px;
+        font-family: 'Comic Sans MS', 'Arial', sans-serif;
+        font-size: 13px;
+        color: #000;
+        box-shadow: 3px 3px 10px rgba(0,0,0,0.2);
+        margin-bottom: 8px;
+        position: relative;
+    }
+    .clippy-speech::after {
+        content: '';
+        position: absolute;
+        bottom: -10px;
+        right: 35px;
+        border-width: 10px 10px 0;
+        border-style: solid;
+        border-color: #FFFFCC transparent;
+        display: block;
+        width: 0;
+    }
+    .clippy-avatar {
+        font-size: 65px;
+        cursor: pointer;
+        filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));
+        transition: transform 0.2s;
+    }
+    .clippy-avatar:hover {
+        transform: scale(1.1) rotate(-5deg);
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-    while True:
-        arquivos = [f for f in os.listdir(PASTA_ENTRADA) if not f.startswith('.')]
+# --- COMPONENTE DO CLIPPY FIXO NA TELA ---
+st.markdown(f"""
+    <div class="clippy-container">
+        <div class="clippy-speech">
+            {st.session_state.mensagens_clippy}
+        </div>
+        <div class="clippy-avatar">📎</div>
+    </div>
+""", unsafe_allow_html=True)
+
+# --- INTERFACE PRINCIPAL ---
+st.title("🤖 Automação Operacional ERP / WMS")
+st.subheader("Extração Inteligente de Mensagens para Planilhas")
+
+# --- BARRA LATERAL (CONFIGURAÇÃO DA CHAVE DE API) ---
+with st.sidebar:
+    st.header("⚙️ Configurações")
+    chave_input = st.text_input("Sua GEMINI_API_KEY:", value=st.session_state.api_key, type="password")
+    if chave_input:
+        st.session_state.api_key = chave_input
+        st.success("Chave salva!")
+    else:
+        st.warning("Insira sua chave de API para continuar.")
+
+# --- CORPO DA APLICAÇÃO ---
+if not st.session_state.api_key:
+    st.info("👈 Por favor, adicione sua chave de API do Gemini na barra lateral para ativar o sistema.")
+    st.session_state.mensagens_clippy = "Ei! Preciso da sua chave de API na barra lateral para começar a trabalhar!"
+else:
+    aba_texto, aba_arquivo = st.tabs(["💬 Digitar / Colar Mensagem", "📁 Enviar Arquivo de Texto"])
+
+    # ABA 1: TEXTO DIRETO
+    with aba_texto:
+        texto_input = st.text_area("Cole a mensagem informal aqui (ex: WhatsApp, e-mail):", height=200, 
+                                   placeholder="Exemplo: Preciso enviar 500 unidades da Mola de Aço (SKU: ML-04) da RUA-A-01-2. Lote L2026-A, OP 99402 para o dia 15/08/2026.")
         
-        for nome_arquivo in arquivos:
-            caminho_arquivo = os.path.join(PASTA_ENTRADA, nome_arquivo)
-            print(f"⚡ Novo arquivo detectado: {nome_arquivo}")
+        if st.button("🚀 Processar Mensagem", type="primary"):
+            if texto_input.strip():
+                try:
+                    with st.spinner("Clippy e Gemini estão processando..."):
+                        dados = processar_texto_com_gemini(texto_input, st.session_state.api_key)
+                        df = pd.DataFrame(dados)
+                        
+                        st.session_state.mensagens_clippy = "Prontinho! Consegui extrair os dados e organizei a tabela para você! 🎉"
+                        st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar: {e}")
+                    st.session_state.mensagens_clippy = "Ops... Ocorreu um erro ao processar esses dados. Verifique a chave ou o texto enviado."
+            else:
+                st.warning("Por favor, insira algum texto.")
+
+    # ABA 2: UPLOAD DE ARQUIVOS
+    with aba_arquivo:
+        arquivo_enviado = st.file_uploader("Envie um arquivo .txt com os dados:", type=["txt"])
+        
+        if arquivo_enviado is not None:
+            conteudo_txt = arquivo_enviado.read().decode("utf-8")
+            st.text_area("Conteúdo do arquivo:", conteudo_txt, height=150, disabled=True)
             
-            try:
-                # 1. Leitura do arquivo colado na pasta
-                with open(caminho_arquivo, "r", encoding="utf-8") as f:
-                    conteudo = f.read()
+            if st.button("🚀 Processar Arquivo"):
+                try:
+                    with st.spinner("Analisando o arquivo..."):
+                        dados = processar_texto_com_gemini(conteudo_txt, st.session_state.api_key)
+                        df = pd.DataFrame(dados)
+                        
+                        st.session_state.mensagens_clippy = "Arquivo lido com sucesso! Aqui estão os dados convertidos em tabela."
+                        st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar o arquivo: {e}")
 
-                print("🧠 Convertendo texto informal na linguagem do ERP via Gemini...")
-                dados_json = processar_texto_com_gemini(conteudo)
+    # RESULTADOS E EXPORTAÇÃO
+    if 'df' in locals():
+        st.markdown("---")
+        st.header("📊 Dados Extraídos para ERP/WMS")
+        st.dataframe(df, use_container_width=True)
 
-                # 2. Converte JSON para DataFrame do Pandas
-                df = pd.DataFrame(dados_json)
-
-                # 3. Gera a planilha Excel pronta para o ERP
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                nome_excel = f"Planilha_ERP_MWS_{timestamp}.xlsx"
-                caminho_excel = os.path.join(PASTA_SAIDA, nome_excel)
-
-                df.to_excel(caminho_excel, index=False, engine='openpyxl')
-                print(f"✅ PLANILHA GERADA COM SUCESSO: {caminho_excel}")
-
-                # 4. Move o arquivo original para histórico
-                caminho_historico = os.path.join(PASTA_PROCESSADOS, f"{timestamp}_{nome_arquivo}")
-                os.rename(caminho_arquivo, caminho_historico)
-                print(f"📦 Arquivo fonte movido para historico.\n")
-
-            except Exception as e:
-                print(f"❌ Erro ao processar arquivo {nome_arquivo}: {e}\n")
-
-        # Aguarda 3 segundos antes de checar a pasta novamente
-        time.sleep(3)
-
-if __name__ == "__main__":
-    executar_robo()
+        # Download do Excel
+        nome_arquivo_excel = "Planilha_ERP_MWS.xlsx"
+        df.to_excel(nome_arquivo_excel, index=False, engine='openpyxl')
+        
+        with open(nome_arquivo_excel, "rb") as file:
+            st.download_button(
+                label="📥 Baixar Planilha Excel (.xlsx)",
+                data=file,
+                file_name=nome_arquivo_excel,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
