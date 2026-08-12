@@ -1,199 +1,139 @@
-import os
-import json
-import pandas as pd
+     
 import streamlit as st
+import pandas as pd
 from google import genai
 from google.genai import types
+import os
 
-# --- CONFIGURAÇÃO DA PÁGINA STREAMLIT ---
-st.set_page_config(
-    page_title="Automação ERP/WMS com Clippy",
-    page_icon="📎",
-    layout="wide"
-)
+st.set_page_config(page_title="ERP Interativo - Estilo Dora", layout="wide")
 
-# --- PROMPT DO SISTEMA GEMINI ---
-SYSTEM_PROMPT = """
-Você é um motor de extração de dados para sistemas ERP e WMS (Manthan MWS, SAP, Protheus).
-Sua tarefa é ler mensagens de texto informais (como conversas de WhatsApp, e-mails ou anotações) e extrair os dados em formato de tabela JSON limpa.
+# 1. Gerenciamento Seguro da Chave de API
+api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 
-Mapeamento obrigatório de colunas para o ERP:
-- SKU (ou Codigo_Produto)
-- Item (Descrição do produto)
-- Quantidade (Apenas o número)
-- Endereco (Posição/Rua no armazém)
-- Lote (Número de lote/batch)
-- Ordem (Número da OP, Pedido ou Carga)
-- Data (Data limite/prazo)
+if not api_key:
+    st.error("🔑 Chave da API do Gemini não encontrada! Configure a variável GEMINI_API_KEY.")
+    st.stop()
 
-Retorne EXATAMENTE um JSON puro no formato de lista de objetos.
-Exemplo de retorno:
-[
-  {"SKU": "ML-04", "Item": "Molas de Aço", "Quantidade": 500, "Endereco": "RUA-A-01-2", "Lote": "L2026-A", "Ordem": "99402", "Data": "15/08/2026"}
-]
-Não inclua nenhuma explicação ou formatação markdown adicional, apenas o código JSON.
-"""
+client = genai.Client(api_key=api_key)
 
-# --- INICIALIZAÇÃO DA SESSÃO ---
-if "api_key" not in st.session_state:
-    st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+# 2. Reset de Estado caso o usuário mude o ERP
+def resetar_jornada():
+    if 'passos_guia' in st.session_state:
+        del st.session_state.passos_guia
+        del st.session_state.passo_atual
 
-if "mensagens_clippy" not in st.session_state:
-    st.session_state.mensagens_clippy = "Olá! Eu sou o Clippy! 📎\nEstou aqui para ajudar a transformar suas mensagens brutas em dados prontos para ERP/WMS."
+st.title("🎓 Assistente Interativo de ERP")
 
-# --- FUNÇÃO DE PROCESSAMENTO COM GEMINI ---
-def processar_texto_com_gemini(texto_raw, api_key):
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=f"Extraia os dados operacionais deste texto:\n\n{texto_raw}",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.1,
-            response_mime_type="application/json"
-        )
+col_left, col_right = st.columns([1, 2])
+
+with col_left:
+    erp_selecionado = st.selectbox(
+        "Qual ERP você deseja utilizar hoje?",
+        ["SAP S/4HANA", "TOTVS Protheus", "Oracle ERP Cloud", "Microsoft Dynamics"],
+        on_change=resetar_jornada
     )
     
-    raw_response = response.text.strip()
-    if raw_response.startswith("```json"):
-        raw_response = raw_response[7:-3].strip()
-    elif raw_response.startswith("```"):
-        raw_response = raw_response[3:-3].strip()
+    arquivo_uploaded = st.file_uploader("Envie a planilha de dados (Excel ou CSV):", type=["xlsx", "csv"])
+
+DICIONARIO_ERP = {
+    "material": ["Material", "Item", "Codigo_Produto", "SKU", "Cod_Mat"],
+    "quantidade": ["Qtd", "Quantidade", "Necessidade", "Estoque_Req", "Volume"],
+    "data": ["Data_Entrega", "Data", "Prazo", "Plann_Date"],
+    "ordem": ["Ordem_Producao", "OP", "Production_Order", "Pedido"]
+}
+
+def padronizar_planilha(df):
+    renomear = {}
+    for col in df.columns:
+        for chave, sinonimos in DICIONARIO_ERP.items():
+            if str(col).strip() in sinonimos:
+                renomear[col] = chave
+    return df.rename(columns=renomear)
+
+# 3. Processamento com Tratamento de Erros
+if arquivo_uploaded is not None:
+    try:
+        if arquivo_uploaded.name.endswith('.csv'):
+            df = pd.read_csv(arquivo_uploaded)
+        else:
+            df = pd.read_excel(arquivo_uploaded)
         
-    return json.loads(raw_response)
-
-# --- CSS PERSONALIZADO (BALÃO DE FALA E PERSONAGEM CLIPPY) ---
-st.markdown("""
-    <style>
-    .clippy-container {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        z-index: 9999;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        max-width: 320px;
-    }
-    .clippy-speech {
-        background-color: #FFFFCC;
-        border: 2px solid #000;
-        border-radius: 10px;
-        padding: 12px;
-        font-family: 'Comic Sans MS', 'Arial', sans-serif;
-        font-size: 13px;
-        color: #000;
-        box-shadow: 3px 3px 10px rgba(0,0,0,0.2);
-        margin-bottom: 8px;
-        position: relative;
-    }
-    .clippy-speech::after {
-        content: '';
-        position: absolute;
-        bottom: -10px;
-        right: 35px;
-        border-width: 10px 10px 0;
-        border-style: solid;
-        border-color: #FFFFCC transparent;
-        display: block;
-        width: 0;
-    }
-    .clippy-avatar {
-        font-size: 65px;
-        cursor: pointer;
-        filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));
-        transition: transform 0.2s;
-    }
-    .clippy-avatar:hover {
-        transform: scale(1.1) rotate(-5deg);
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- COMPONENTE DO CLIPPY FIXO NA TELA ---
-st.markdown(f"""
-    <div class="clippy-container">
-        <div class="clippy-speech">
-            {st.session_state.mensagens_clippy}
-        </div>
-        <div class="clippy-avatar">📎</div>
-    </div>
-""", unsafe_allow_html=True)
-
-# --- INTERFACE PRINCIPAL ---
-st.title("🤖 Automação Operacional ERP / WMS")
-st.subheader("Extração Inteligente de Mensagens para Planilhas")
-
-# --- BARRA LATERAL (CONFIGURAÇÃO DA CHAVE DE API) ---
-with st.sidebar:
-    st.header("⚙️ Configurações")
-    chave_input = st.text_input("Sua GEMINI_API_KEY:", value=st.session_state.api_key, type="password")
-    if chave_input:
-        st.session_state.api_key = chave_input
-        st.success("Chave salva!")
-    else:
-        st.warning("Insira sua chave de API para continuar.")
-
-# --- CORPO DA APLICAÇÃO ---
-if not st.session_state.api_key:
-    st.info("👈 Por favor, adicione sua chave de API do Gemini na barra lateral para ativar o sistema.")
-    st.session_state.mensagens_clippy = "Ei! Preciso da sua chave de API na barra lateral para começar a trabalhar!"
-else:
-    aba_texto, aba_arquivo = st.tabs(["💬 Digitar / Colar Mensagem", "📁 Enviar Arquivo de Texto"])
-
-    # ABA 1: TEXTO DIRETO
-    with aba_texto:
-        texto_input = st.text_area("Cole a mensagem informal aqui (ex: WhatsApp, e-mail):", height=200, 
-                                   placeholder="Exemplo: Preciso enviar 500 unidades da Mola de Aço (SKU: ML-04) da RUA-A-01-2. Lote L2026-A, OP 99402 para o dia 15/08/2026.")
+        df_padronizado = padronizar_planilha(df)
+        st.success("Planilha carregada e processada com sucesso!")
         
-        if st.button("🚀 Processar Mensagem", type="primary"):
-            if texto_input.strip():
-                try:
-                    with st.spinner("Clippy e Gemini estão processando..."):
-                        dados = processar_texto_com_gemini(texto_input, st.session_state.api_key)
-                        df = pd.DataFrame(dados)
-                        
-                        st.session_state.mensagens_clippy = "Prontinho! Consegui extrair os dados e organizei a tabela para você! 🎉"
-                        st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Erro ao processar: {e}")
-                    st.session_state.mensagens_clippy = "Ops... Ocorreu um erro ao processar esses dados. Verifique a chave ou o texto enviado."
-            else:
-                st.warning("Por favor, insira algum texto.")
+        # Resumo estatístico para ajudar o Gemini sem estourar tokens
+        resumo_dados = f"Total de linhas: {len(df_padronizado)}\n"
+        resumo_dados += f"Colunas encontradas: {list(df_padronizado.columns)}\n"
+        resumo_dados += f"Amostra dos dados:\n{df_padronizado.head(5).to_string()}"
 
-    # ABA 2: UPLOAD DE ARQUIVOS
-    with aba_arquivo:
-        arquivo_enviado = st.file_uploader("Envie um arquivo .txt com os dados:", type=["txt"])
+        system_instruction = f"""
+        Você é o próprio sistema ERP {erp_selecionado}. Sua personalidade é super didática, amigável e interativa, 
+        exatamente no estilo da 'Dora a Aventureira'. Você fala em 1ª pessoa ('Eu vejo...', 'Vem em mim na transação X').
         
-        if arquivo_enviado is not None:
-            conteudo_txt = arquivo_enviado.read().decode("utf-8")
-            st.text_area("Conteúdo do arquivo:", conteudo_txt, height=150, disabled=True)
-            
-            if st.button("🚀 Processar Arquivo"):
-                try:
-                    with st.spinner("Analisando o arquivo..."):
-                        dados = processar_texto_com_gemini(conteudo_txt, st.session_state.api_key)
-                        df = pd.DataFrame(dados)
-                        
-                        st.session_state.mensagens_clippy = "Arquivo lido com sucesso! Aqui estão os dados convertidos em tabela."
-                        st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Erro ao processar o arquivo: {e}")
+        Sua missão:
+        1. Analisar os dados fornecidos da planilha.
+        2. Guiar o usuário passo a passo no processo de resolução.
+        3. Indicar exatamente qual tela ou transação ele deve abrir no {erp_selecionado}.
+        4. Citar dados específicos da planilha para ele preencher em cada passo.
+        
+        Retorne a resposta dividida EXATAMENTE em passos numerados no seguinte formato de marcação:
+        ---PASSO---
+        [Título do Passo | Transação]
+        [Fala da Dora/ERP explicando o que fazer e quais dados usar]
+        """
+        
+        if 'passos_guia' not in st.session_state:
+            with st.spinner("O ERP está analisando seus dados..."):
+                prompt = f"Aqui está o resumo do arquivo recebido:\n{resumo_dados}\n\nCrie a jornada passo a passo para eu processar estes dados."
+                
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.3 # Menor temperatura garante respostas mais precisas/técnicas
+                    )
+                )
+                
+                raw_text = response.text
+                passos = [p.strip() for p in raw_text.split("---PASSO---") if p.strip()]
+                
+                if passos:
+                    st.session_state.passos_guia = passos
+                    st.session_state.passo_atual = 0
+                else:
+                    st.warning("O modelo não retornou os passos no formato esperado. Tente reenviar.")
 
-    # RESULTADOS E EXPORTAÇÃO
-    if 'df' in locals():
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao processar o arquivo: {e}")
+
+    # 4. Exibição
+    if 'passos_guia' in st.session_state and st.session_state.passos_guia:
+        passos = st.session_state.passos_guia
+        total_passos = len(passos)
+        atual = st.session_state.passo_atual
+        
         st.markdown("---")
-        st.header("📊 Dados Extraídos para ERP/WMS")
-        st.dataframe(df, use_container_width=True)
-
-        # Download do Excel
-        nome_arquivo_excel = "Planilha_ERP_MWS.xlsx"
-        df.to_excel(nome_arquivo_excel, index=False, engine='openpyxl')
         
-        with open(nome_arquivo_excel, "rb") as file:
-            st.download_button(
-                label="📥 Baixar Planilha Excel (.xlsx)",
-                data=file,
-                file_name=nome_arquivo_excel,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        col_tit, col_btn = st.columns([3, 1])
+        with col_tit:
+            st.subheader(f"📍 Jornada de Processamento ({atual + 1} de {total_passos})")
+        with col_btn:
+            if st.button("🔄 Recomeçar Análise"):
+                resetar_jornada()
+                st.rerun()
+
+        conteudo_passo = passos[atual]
+        st.info(f"🤖 **{erp_selecionado} diz:**\n\n{conteudo_passo}")
+        
+        col_voltar, col_espaco, col_proximo = st.columns([1, 4, 1])
+        
+        with col_voltar:
+            if st.button("⬅️ Voltar", disabled=(atual == 0)):
+                st.session_state.passo_atual -= 1
+                st.rerun()
+                
+        with col_proximo:
+            if st.button("Próximo ➡️", disabled=(atual == total_passos - 1)):
+                st.session_state.passo_atual += 1
+                st.rerun()
